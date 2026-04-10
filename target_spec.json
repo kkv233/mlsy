@@ -1,0 +1,9 @@
+{
+  "run": "/tmp/mlsy_probes/clock_probe",
+  "targets": [
+    "actual_boost_clock_mhz",
+    "dram_latency_cycles",
+    "bank_conflict_penalty",
+    "l2_cache_capacity"
+  ]
+}

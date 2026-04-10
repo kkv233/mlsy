@@ -1,0 +1,8 @@
+{
+  "run": "/tmp/sample_matmul",
+  "targets": [
+    "bottleneck_diagnosis",
+    "tensor_core_utilization",
+    "memory_hierarchy_analysis"
+  ]
+}

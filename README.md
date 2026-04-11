@@ -1,5 +1,29 @@
 # MLSYS Phase 1 — GPU 性能分析多智能体框架
 
+## 关于 ncu 权限的说明
+
+本项目在 **AutoDL 云平台**（Docker 容器环境）上开发和测试。ncu（NVIDIA Nsight Compute）需要访问 GPU 硬件性能计数器，这要求内核级权限（`CAP_SYS_ADMIN` 或 `/dev/nvidia-caps` 设备访问）。AutoDL 容器不开放这些权限，因此 ncu 调用会返回：
+
+```
+ERR_NVGPUCTRPERM - The user does not have permission to access NVIDIA GPU Performance Counters
+```
+
+**解决方式（需要控制容器启动参数）：**
+
+```bash
+# 方式一：特权模式
+docker run --privileged ...
+
+# 方式二：仅开放性能计数器设备
+docker run --cap-add=SYS_ADMIN --device /dev/nvidia-caps:/dev/nvidia-caps ...
+```
+
+AutoDL 不允许用户自定义容器启动参数，因此在该平台上 ncu 路径无法使用。框架已实现自动降级：ncu 失败时切换到 `nvidia-smi dmon` 采样，保证 operator profiling 在受限环境下仍能输出结果。
+
+**在 CFFF（课程评测服务器）上运行时**，评测环境预期具备完整的 ncu 权限。届时框架将走完整的 ncu 路径，采集 21 个硬件计数器 metrics，包括 tensor core 活跃周期占比、内存层级吞吐率、warp 分歧率等精细指标，分析精度将显著高于 dmon 降级路径。框架代码无需任何修改，权限具备时自动使用 ncu，权限不足时自动降级，两条路径均已测试。
+
+---
+
 ## 项目概述
 
 本项目实现了一个 **spec 驱动的多智能体 GPU profiling 框架**，能够自动读取评测系统提供的 `target_spec.json`，动态路由到合适的 profiling 策略，输出 `results.json` 和完整的推理日志。

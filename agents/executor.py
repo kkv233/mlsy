@@ -132,72 +132,69 @@ class Executor:
 
     # ------------------------------------------------------------------
     def _run_torch_profiler(self, plan: TaskPlan, result: RawResult):
-        """Fallback: use torch.profiler when ncu lacks permissions.
-        Only runs for operator_profiling tasks (not hardware probes that already have probe data)."""
+        """Fallback when ncu lacks permissions: use nvidia-smi dmon to sample
+        GPU utilization while the target executable runs."""
         if plan.task.task_type == "hardware_probe" and result.probe_stdout:
-            # Hardware probe already has data; don't overwrite with torch profiler
-            log.info(f"Skipping torch profiler for hardware probe {plan.task.name} (probe data exists)")
+            log.info(f"Skipping fallback profiler for hardware probe {plan.task.name}")
             return
-        import sys
+
         exe = plan.task.run
-        log.info(f"Falling back to torch.profiler for {plan.task.name}")
+        log.info(f"Falling back to nvidia-smi dmon profiling for {plan.task.name}")
 
-        script = f"""
-import torch, torch.profiler, json, sys
-device = 'cuda'
-torch.cuda.synchronize()
+        import tempfile, threading
 
-# Try to run the target executable via subprocess and profile a representative op
-import subprocess
-ret = subprocess.run(['{exe}'], capture_output=True, text=True, timeout=60)
+        dmon_output = []
+        stop_event = threading.Event()
 
-# Also profile a representative matmul as baseline
-x = torch.randn(1024, 1024, device=device)
-y = torch.randn(1024, 1024, device=device)
-for _ in range(3): torch.mm(x, y)
-torch.cuda.synchronize()
-
-with torch.profiler.profile(
-    activities=[torch.profiler.ProfilerActivity.CUDA],
-    record_shapes=True, with_flops=True,
-) as prof:
-    for _ in range(10): torch.mm(x, y)
-    torch.cuda.synchronize()
-
-events = prof.key_averages()
-result = {{
-    'total_cuda_us': sum(e.self_cuda_time_total for e in events),
-    'total_flops': sum(e.flops or 0 for e in events),
-    'top_kernels': [
-        {{'name': e.key, 'cuda_us': e.self_cuda_time_total, 'flops': e.flops or 0}}
-        for e in sorted(events, key=lambda x: x.self_cuda_time_total, reverse=True)[:5]
-        if e.self_cuda_time_total > 0
-    ],
-    'exe_stdout': ret.stdout[:500],
-}}
-print('TORCH_PROFILE_JSON:' + json.dumps(result))
-"""
-        import tempfile
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-            f.write(script)
-            tmp = f.name
-
-        try:
+        def run_dmon():
+            # Sample every 100ms: SM util, memory util, memory clock, SM clock
             ret = subprocess.run(
-                [sys.executable, tmp], capture_output=True, text=True, timeout=120
+                ["nvidia-smi", "dmon", "-s", "ucm", "-d", "1"],
+                capture_output=True, text=True, timeout=60,
             )
-            for line in ret.stdout.splitlines():
-                if line.startswith("TORCH_PROFILE_JSON:"):
-                    data = json.loads(line[len("TORCH_PROFILE_JSON:"):])
-                    log_path = LOGS_DIR / f"torch_{plan.task.name}.json"
-                    log_path.write_text(json.dumps(data, indent=2))
-                    # Store in probe_stdout for analyzer to pick up
-                    result.probe_stdout = "TORCH_PROFILE:" + json.dumps(data)
-                    result.probe_log_path = str(log_path)
-                    log.info(f"Torch profiler data saved: {log_path}")
-                    break
+            dmon_output.append(ret.stdout)
+
+        # Start dmon in background thread
+        dmon_thread = threading.Thread(target=run_dmon, daemon=True)
+        dmon_thread.start()
+
+        # Run the target executable
+        try:
+            exe_ret = subprocess.run([exe], capture_output=True, text=True, timeout=60)
+            exe_stdout = exe_ret.stdout
         except Exception as e:
-            log.warning(f"Torch profiler failed: {e}")
+            exe_stdout = str(e)
         finally:
-            import os
-            os.unlink(tmp)
+            # Stop dmon
+            subprocess.run(["pkill", "-f", "nvidia-smi dmon"], capture_output=True)
+            dmon_thread.join(timeout=3)
+
+        dmon_text = dmon_output[0] if dmon_output else ""
+
+        # Parse dmon output: extract peak SM util and memory util
+        sm_utils, mem_utils = [], []
+        for line in dmon_text.splitlines():
+            if line.startswith("#") or not line.strip():
+                continue
+            parts = line.split()
+            if len(parts) >= 3:
+                try:
+                    sm_utils.append(int(parts[1]))
+                    mem_utils.append(int(parts[2]))
+                except ValueError:
+                    continue
+
+        data = {
+            "exe_stdout": exe_stdout[:500],
+            "peak_sm_util_pct": max(sm_utils) if sm_utils else None,
+            "avg_sm_util_pct": round(sum(sm_utils) / len(sm_utils), 1) if sm_utils else None,
+            "peak_mem_util_pct": max(mem_utils) if mem_utils else None,
+            "dmon_samples": len(sm_utils),
+            "profiling_method": "nvidia-smi dmon (ncu unavailable)",
+        }
+
+        log_path = LOGS_DIR / f"dmon_{plan.task.name}.json"
+        log_path.write_text(json.dumps(data, indent=2))
+        result.probe_stdout = "TORCH_PROFILE:" + json.dumps(data)
+        result.probe_log_path = str(log_path)
+        log.info(f"dmon profile saved: {log_path} (peak SM={data['peak_sm_util_pct']}%)")

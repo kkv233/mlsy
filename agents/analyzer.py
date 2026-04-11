@@ -146,57 +146,53 @@ class Analyzer:
         )
 
     def _analyze_from_torch(self, raw: RawResult, name: str, torch_data: dict, evidence: dict) -> AnalyzedResult:
-        """Analyze using torch profiler data when ncu is unavailable."""
-        total_us = torch_data.get("total_cuda_us", 0)
-        total_flops = torch_data.get("total_flops", 0)
-        kernels = torch_data.get("top_kernels", [])
+        """Analyze using nvidia-smi dmon data when ncu is unavailable."""
+        peak_sm = torch_data.get("peak_sm_util_pct")
+        avg_sm = torch_data.get("avg_sm_util_pct")
+        peak_mem = torch_data.get("peak_mem_util_pct")
+        method = torch_data.get("profiling_method", "dmon")
 
         reasoning_parts = [
-            f"Analysis based on torch.profiler (ncu permission denied).",
-            f"Total CUDA time: {total_us:.1f} us, Total FLOPs: {total_flops:.2e}",
+            f"Analysis via {method}.",
+            f"Peak SM utilization: {peak_sm}%, Avg SM utilization: {avg_sm}%",
+            f"Peak memory utilization: {peak_mem}%",
         ]
 
         value = None
 
         if "bottleneck" in name or "bound" in name:
-            # Heuristic: check if tensor core kernels are present
-            tc_kernels = [k for k in kernels if any(
-                x in k["name"].lower() for x in ["hmma", "wmma", "tensor", "cutlass"]
-            )]
-            if tc_kernels:
-                # Tensor core kernels → likely compute bound
-                value = "compute_bound"
-                reasoning_parts.append(f"Tensor core kernels detected: {[k['name'] for k in tc_kernels]}")
+            if peak_sm is not None and peak_mem is not None:
+                if peak_sm > peak_mem * 1.2:
+                    value = "compute_bound"
+                    reasoning_parts.append(f"SM util ({peak_sm}%) dominates mem util ({peak_mem}%) → compute_bound")
+                else:
+                    value = "memory_bound"
+                    reasoning_parts.append(f"Mem util ({peak_mem}%) comparable to SM util ({peak_sm}%) → memory_bound")
             else:
-                # No tensor cores → likely memory bound for simple kernels
-                value = "memory_bound"
-                reasoning_parts.append("No tensor core kernels detected; likely memory-bound")
+                value = "unknown"
+                reasoning_parts.append("Insufficient dmon samples to classify")
 
         elif "tensor_core" in name:
-            tc_time = sum(k["cuda_us"] for k in kernels if any(
-                x in k["name"].lower() for x in ["hmma", "wmma", "tensor", "cutlass", "sgemm", "hgemm"]
-            ))
-            value = tc_time / max(total_us, 1)
-            reasoning_parts.append(f"Tensor core kernel time fraction: {value:.2%}")
+            # Can't determine tensor core usage from dmon; report SM util as proxy
+            value = (peak_sm or 0) / 100.0
+            reasoning_parts.append("Tensor core usage not measurable via dmon; SM util used as proxy")
 
         elif "memory_hierarchy" in name:
-            value = {"total_cuda_us": total_us, "top_kernels": kernels}
-            reasoning_parts.append("Memory hierarchy analysis requires ncu; torch profiler provides timing only")
+            value = {
+                "peak_sm_util_pct": peak_sm,
+                "peak_mem_util_pct": peak_mem,
+                "note": "ncu unavailable; hierarchy detail requires hardware counters",
+            }
 
         else:
-            if total_us > 0 and total_flops > 0:
-                tflops = total_flops / (total_us * 1e6)
-                value = tflops
-                reasoning_parts.append(f"Achieved throughput: {tflops:.2f} TFLOPS")
-            else:
-                value = total_us
+            value = peak_sm
 
         return AnalyzedResult(
             task=raw.task,
             value=value,
             evidence=evidence,
             reasoning="\n".join(reasoning_parts),
-            confidence="medium",  # torch profiler is less precise than ncu
+            confidence="medium",
         )
 
     # ------------------------------------------------------------------

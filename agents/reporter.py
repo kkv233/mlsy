@@ -46,10 +46,16 @@ class Reporter:
             json.dump(final, f, indent=2, default=str)
         log.info(f"results.json written: {output_path}")
 
-        # Write full summary report
-        self._write_summary(results_with_llm, final)
+        # Generate concise summary via dedicated summarizer call
+        summary_text = ""
+        try:
+            summary_text = self.llm.summarize(results, final)
+        except Exception as e:
+            log.warning(f"Summary generation failed: {e}")
 
-    def _write_summary(self, results_with_llm: list[tuple], final: dict):
+        self._write_summary(results_with_llm, final, summary_text)
+
+    def _write_summary(self, results_with_llm: list[tuple], final: dict, summary_text: str):
         lines = [
             "=" * 60,
             "MLSYS Phase 1 — GPU Profiling Analysis Report",
@@ -61,26 +67,18 @@ class Reporter:
         for k, v in final.items():
             lines.append(f"  {k}: {v}")
 
-        lines += ["", "=" * 60, "", "[ Per-Target Analysis ]", ""]
+        if summary_text:
+            lines += ["", "[ Summary ]", "", summary_text]
+
+        lines += ["", "=" * 60, "", "[ Per-Target Details ]", ""]
 
         for r, llm_text in results_with_llm:
-            lines.append(f">> {r.task.name} ({r.task.task_type})")
-            lines.append(f"   Measured value : {r.value}")
-            lines.append(f"   Confidence     : {r.confidence}")
-            lines.append(f"   Analyzer       : {r.reasoning}")
-
-            if llm_text:
-                try:
-                    parsed = json.loads(llm_text)
-                    lines.append(f"   LLM reasoning  : {parsed.get('reasoning', '')[:300]}")
-                    anomalies = parsed.get("anomalies", "")
-                    if anomalies:
-                        lines.append(f"   Anomalies      : {anomalies[:200]}")
-                except Exception:
-                    lines.append(f"   LLM            : {llm_text[:300]}")
-
+            lines.append(f">> {r.task.name}")
+            lines.append(f"   value      : {final.get(r.task.name, r.value)}")
+            lines.append(f"   confidence : {r.confidence}")
+            lines.append(f"   method     : {r.reasoning}")
             if r.error:
-                lines.append(f"   Error          : {r.error}")
+                lines.append(f"   error      : {r.error}")
             lines.append("")
 
         (LOGS_DIR / "summary.txt").write_text("\n".join(lines))

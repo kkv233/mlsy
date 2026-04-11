@@ -75,9 +75,17 @@ class LLMClient:
                 temperature=0.1,
             )
             content = resp.choices[0].message.content.strip()
-            # Strip thinking tags if present (Qwen3 thinking mode)
-            if "<think>" in content:
+            # Qwen3 thinking mode: content may be empty, actual answer is in reasoning_content
+            if not content:
+                reasoning_content = getattr(resp.choices[0].message, "reasoning_content", "") or ""
+                content = reasoning_content.strip()
+            # Strip <think>...</think> wrapper if present
+            if "<think>" in content and "</think>" in content:
                 content = content[content.rfind("</think>") + len("</think>"):].strip()
+            # If still empty after stripping, use the thinking content directly
+            if not content and "<think>" in (resp.choices[0].message.content or ""):
+                raw = resp.choices[0].message.content
+                content = raw[raw.find("<think>") + len("<think>"):raw.rfind("</think>")].strip()
             log.info(f"LLM response for {result.task.name}: {content[:200]}")
             return content
         except Exception as e:
@@ -98,7 +106,41 @@ class LLMClient:
                 log.warning(f"Fallback LLM also failed: {e2}")
                 return ""
 
-    def _build_prompt(self, result: AnalyzedResult) -> str:
+    def summarize(self, all_results: list[AnalyzedResult], final: dict) -> str:
+        """
+        Single call to produce a concise GPU performance summary across all targets.
+        Uses enable_thinking=False for a direct, non-verbose response.
+        """
+        if self.client is None:
+            return ""
+
+        lines = []
+        for r in all_results:
+            val = final.get(r.task.name, r.value)
+            lines.append(f"- {r.task.name}: {val}  (confidence: {r.confidence})")
+            if r.reasoning:
+                lines.append(f"  evidence: {r.reasoning}")
+
+        prompt = f"""You are a GPU performance expert. Below are profiling results from a GPU benchmark.
+
+{chr(10).join(lines)}
+
+Write a concise technical summary (3-6 sentences) of what these results reveal about this GPU's performance characteristics and any notable bottlenecks or anomalies. Be direct and specific — cite actual measured values. No bullet points, no headers, just a paragraph."""
+
+        try:
+            resp = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=512,
+                temperature=0.3,
+                extra_body={"enable_thinking": False},
+            )
+            content = resp.choices[0].message.content.strip()
+            log.info(f"Summary generated ({len(content)} chars)")
+            return content
+        except Exception as e:
+            log.warning(f"Summary LLM call failed: {e}")
+            return ""
         data = {
             "target": result.task.name,
             "task_type": result.task.task_type,
@@ -107,22 +149,18 @@ class LLMClient:
             "analyzer_reasoning": result.reasoning,
             "evidence": result.evidence,
         }
-        return f"""Analyze this GPU profiling result and provide your assessment.
+        return f"""GPU profiling result for target: {result.task.name}
 
-Target: {result.task.name}
-Task type: {result.task.task_type}
-
-Measured data:
 {json.dumps(data, indent=2, default=str)}
 
-Provide a JSON response with exactly these fields:
+Respond with JSON containing exactly these fields:
 {{
-  "value": <the final measured value — number or classification string>,
-  "reasoning": "<step-by-step explanation citing specific measured values>",
+  "value": <final measured value — number or classification string>,
+  "verdict": "<one sentence: what this value means for GPU performance, citing the key measured number>",
   "confidence": "high|medium|low",
-  "anomalies": "<any detected anomalies or empty string>"
+  "anomalies": "<one sentence describing any anomaly detected, or empty string if none>"
 }}
 
-For hardware probe targets, "value" should be a number.
-For operator profiling targets like bottleneck_diagnosis, "value" should be a string like "memory_bound" or "compute_bound".
+Be concise. verdict must be a single sentence. Do not repeat the raw numbers already in the data unless necessary for context.
+For hardware probes, value is a number. For bottleneck_diagnosis, value is "memory_bound" or "compute_bound".
 """

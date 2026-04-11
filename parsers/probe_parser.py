@@ -15,6 +15,7 @@ def parse_probe_output(probe_name: str | None, stdout: str) -> dict:
         "pointer_chasing": _parse_pointer_chasing,
         "bandwidth_sweep": _parse_bandwidth_sweep,
         "bank_conflict": _parse_bank_conflict,
+        "shmem_probe": _parse_shmem_probe,
     }
     fn = parsers.get(probe_name, _parse_generic)
     try:
@@ -155,6 +156,21 @@ def _parse_bank_conflict(stdout: str) -> dict:
         result["no_conflict_cycles"] = base
         result["max_conflict_cycles"] = worst
 
+    return result
+
+
+def _parse_shmem_probe(stdout: str) -> dict:
+    """Parse shmem_probe.cu output.
+    Expected lines:
+      max_shmem_per_block_kb: <val>
+      max_shmem_optin_kb: <val>
+      shmem_bandwidth_GBs: <val>
+    """
+    result = {}
+    for line in stdout.splitlines():
+        m = re.match(r"([\w_]+):\s*([0-9.]+)", line.strip())
+        if m:
+            result[m.group(1)] = float(m.group(2))
     return result
 
 

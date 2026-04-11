@@ -12,6 +12,8 @@ HARDWARE_PROBE_KEYWORDS = {
     "l1_cache", "l2_cache", "dram", "sm_count", "warp_scheduler",
     "register_file", "throughput_peak", "boost_clock", "actual_clock",
     "memory_latency", "cache_size",
+    # shared memory / warp topology probes
+    "max_shmem", "shmem", "shared_mem", "warp_size",
 }
 
 

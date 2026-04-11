@@ -109,7 +109,7 @@ class LLMClient:
     def summarize(self, all_results: list[AnalyzedResult], final: dict) -> str:
         """
         Single call to produce a concise GPU performance summary across all targets.
-        Uses enable_thinking=False for a direct, non-verbose response.
+        Uses enable_thinking=True for careful analysis, but demands a structured verdict output.
         """
         if self.client is None:
             return ""
@@ -121,21 +121,35 @@ class LLMClient:
             if r.reasoning:
                 lines.append(f"  evidence: {r.reasoning}")
 
-        prompt = f"""You are a GPU performance expert. Below are profiling results from a GPU benchmark.
+        prompt = f"""You are a GPU performance expert. Below are profiling results from a GPU benchmark on an NVIDIA RTX 4090 D (Ada Lovelace, CC 8.9).
 
 {chr(10).join(lines)}
 
-Write a concise technical summary (3-6 sentences) of what these results reveal about this GPU's performance characteristics and any notable bottlenecks or anomalies. Be direct and specific — cite actual measured values. No bullet points, no headers, just a paragraph."""
+For each metric, give a one-line verdict: the measured value, whether it is good/normal/bad relative to expected hardware behavior, and what specific performance problem it implies (if any).
+Then write one final sentence summarizing the overall GPU performance picture.
+
+Format exactly like this example (replace with real content):
+- actual_boost_clock_mhz: 2519 MHz — slightly below spec (2520 MHz typical), negligible impact
+- dram_latency_cycles: 291 cycles — abnormally low for GDDR6X (expected 400-600), L2/DRAM boundary unclear
+- bank_conflict_penalty: 3.04x — moderate conflict overhead, shared memory kernels with stride-32 access will lose ~3x throughput
+- l2_cache_capacity: 64 MB — matches Ada L2 spec, cache is functioning normally
+Overall: <one sentence on the dominant bottleneck or health of this GPU>"""
 
         try:
             resp = self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=512,
-                temperature=0.3,
+                max_tokens=1024,
+                temperature=0.1,
                 extra_body={"enable_thinking": False},
             )
             content = resp.choices[0].message.content.strip()
+            # Qwen3.5: when content is empty, answer is in reasoning_content
+            if not content:
+                rc = getattr(resp.choices[0].message, "reasoning_content", "") or ""
+                # Extract the final conclusion from the end of the thinking block
+                # (reasoning_content ends with the actual answer after the thinking)
+                content = rc.strip()
             log.info(f"Summary generated ({len(content)} chars)")
             return content
         except Exception as e:

@@ -68,8 +68,13 @@ class Analyzer:
                 reasoning = f"Peak memory bandwidth: {value} GB/s"
 
         if value is None:
-            value = parsed.get("value") or parsed
-            reasoning = reasoning or f"Raw probe output: {json.dumps(parsed)}"
+            value = parsed.get("value") or parsed or None
+            reasoning = reasoning or f"Raw probe output: {parsed}"
+
+        # Last resort: unknown hardware probe with no matching probe file
+        # Try pynvml for device-level info
+        if value is None or value == {}:
+            value, reasoning = self._nvml_fallback(name)
 
         return AnalyzedResult(
             task=raw.task,
@@ -252,3 +257,36 @@ class Analyzer:
         )
         return {"l1_bytes": l1, "l2_bytes": l2, "dram_bytes": dram,
                 "l1_hit_rate": l2_hit, "l2_hit_rate": dram_hit}, r
+
+    def _nvml_fallback(self, name: str) -> tuple:
+        """Use pynvml to answer common device-level queries when no probe covers them."""
+        try:
+            import pynvml
+            pynvml.nvmlInit()
+            h = pynvml.nvmlDeviceGetHandleByIndex(0)
+            name_lower = name.lower()
+
+            if "sm_count" in name_lower or "sm_number" in name_lower:
+                # Prefer torch.cuda.get_device_properties which directly reports SM count
+                try:
+                    import torch
+                    props = torch.cuda.get_device_properties(0)
+                    val = props.multi_processor_count
+                    return val, f"SM count from torch.cuda.get_device_properties: {val} SMs"
+                except Exception:
+                    # Fallback: total CUDA cores ÷ 128 (Ada Lovelace / Ampere: 128 CUDA cores per SM)
+                    cuda_cores = pynvml.nvmlDeviceGetNumGpuCores(h)
+                    val = cuda_cores // 128
+                    return val, f"SM count estimated: {cuda_cores} CUDA cores ÷ 128 = {val} SMs"
+            elif "memory" in name_lower and "total" in name_lower:
+                val = pynvml.nvmlDeviceGetMemoryInfo(h).total
+                return val, f"Total VRAM from nvml: {val} bytes"
+            elif "warp" in name_lower:
+                # Warp size is architecturally fixed at 32
+                return 32, "Warp size is architecturally fixed at 32 on all NVIDIA GPUs"
+            else:
+                # Generic: return SM clock as a best-effort value
+                val = pynvml.nvmlDeviceGetClockInfo(h, pynvml.NVML_CLOCK_SM)
+                return val, f"No dedicated probe for '{name}'; nvml SM clock={val} MHz as proxy"
+        except Exception as e:
+            return None, f"nvml fallback failed: {e}"

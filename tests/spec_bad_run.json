@@ -1,0 +1,7 @@
+{
+  "run": "/nonexistent/path/to/exe",
+  "targets": [
+    "bottleneck_diagnosis",
+    "actual_boost_clock_mhz"
+  ]
+}

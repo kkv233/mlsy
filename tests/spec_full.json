@@ -1,0 +1,12 @@
+{
+  "run": "/tmp/sample_matmul",
+  "targets": [
+    "actual_boost_clock_mhz",
+    "dram_latency_cycles",
+    "bank_conflict_penalty",
+    "l2_cache_capacity",
+    "bottleneck_diagnosis",
+    "tensor_core_utilization",
+    "memory_hierarchy_analysis"
+  ]
+}

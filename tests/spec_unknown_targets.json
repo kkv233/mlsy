@@ -1,0 +1,8 @@
+{
+  "run": "/tmp/sample_matmul",
+  "targets": [
+    "warp_efficiency",
+    "sm_count",
+    "unknown_metric_xyz"
+  ]
+}

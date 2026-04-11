@@ -1,0 +1,6 @@
+{
+  "targets": [
+    "actual_boost_clock_mhz",
+    "dram_latency_cycles"
+  ]
+}

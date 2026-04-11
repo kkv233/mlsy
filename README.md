@@ -2,7 +2,23 @@
 
 基于 spec 驱动的多智能体 GPU profiling 框架。读取 `target_spec.json`，自动路由到合适的 profiling 策略，输出 `results.json` 和每个 target 的推理日志。
 
-## 运行方式
+## 评测入口
+
+将 `target_spec.json` 放到项目根目录，然后运行：
+
+```bash
+bash eval.sh
+```
+
+或指定 spec 路径：
+
+```bash
+bash eval.sh /path/to/target_spec.json
+```
+
+输出：`results.json`（键名与 spec targets 对应）和 `logs/`（每个 target 的推理日志）。
+
+## 手动运行
 
 ```bash
 pip install -r requirements.txt
@@ -12,8 +28,6 @@ export SILICONFLOW_API_KEY=your_key
 
 python3 main.py target_spec.json
 ```
-
-输出：`results.json` 和 `logs/reasoning_<target>.txt`。
 
 ## 输入格式
 

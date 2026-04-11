@@ -16,20 +16,20 @@ class Reporter:
     def report(self, results: list[AnalyzedResult], output_path: str = "results.json"):
         LOGS_DIR.mkdir(exist_ok=True)
         final = {}
+        results_with_llm = []
 
         for r in results:
-            # Optionally enrich with LLM reasoning
             llm_reasoning = ""
             try:
                 llm_reasoning = self.llm.interpret(r)
             except Exception as e:
                 log.warning(f"LLM interpretation failed for {r.task.name}: {e}")
 
-            # Write per-target reasoning log
+            results_with_llm.append((r, llm_reasoning))
+
             log_path = LOGS_DIR / f"reasoning_{r.task.name}.txt"
             log_path.write_text(self._format_reasoning(r, llm_reasoning))
 
-            # Determine final value (LLM may refine it)
             value = r.value
             if llm_reasoning:
                 try:
@@ -37,7 +37,7 @@ class Reporter:
                     if "value" in parsed:
                         value = parsed["value"]
                 except Exception:
-                    pass  # keep analyzer value
+                    pass
 
             final[r.task.name] = value
             log.info(f"Result [{r.task.name}]: {value}")
@@ -46,10 +46,44 @@ class Reporter:
             json.dump(final, f, indent=2, default=str)
         log.info(f"results.json written: {output_path}")
 
-        # Write summary
-        (LOGS_DIR / "summary.txt").write_text(
-            json.dumps(final, indent=2, default=str)
-        )
+        # Write full summary report
+        self._write_summary(results_with_llm, final)
+
+    def _write_summary(self, results_with_llm: list[tuple], final: dict):
+        lines = [
+            "=" * 60,
+            "MLSYS Phase 1 — GPU Profiling Analysis Report",
+            "=" * 60,
+            "",
+            "[ Final Results ]",
+            "",
+        ]
+        for k, v in final.items():
+            lines.append(f"  {k}: {v}")
+
+        lines += ["", "=" * 60, "", "[ Per-Target Analysis ]", ""]
+
+        for r, llm_text in results_with_llm:
+            lines.append(f">> {r.task.name} ({r.task.task_type})")
+            lines.append(f"   Measured value : {r.value}")
+            lines.append(f"   Confidence     : {r.confidence}")
+            lines.append(f"   Analyzer       : {r.reasoning}")
+
+            if llm_text:
+                try:
+                    parsed = json.loads(llm_text)
+                    lines.append(f"   LLM reasoning  : {parsed.get('reasoning', '')[:300]}")
+                    anomalies = parsed.get("anomalies", "")
+                    if anomalies:
+                        lines.append(f"   Anomalies      : {anomalies[:200]}")
+                except Exception:
+                    lines.append(f"   LLM            : {llm_text[:300]}")
+
+            if r.error:
+                lines.append(f"   Error          : {r.error}")
+            lines.append("")
+
+        (LOGS_DIR / "summary.txt").write_text("\n".join(lines))
 
     def _format_reasoning(self, r: AnalyzedResult, llm_text: str) -> str:
         lines = [

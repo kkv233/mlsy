@@ -2,14 +2,31 @@
 import os
 import json
 import logging
+from pathlib import Path
 from openai import OpenAI
 from agents.models import AnalyzedResult
 
 log = logging.getLogger(__name__)
 
 SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1"
-DEFAULT_MODEL = "Qwen/Qwen3-235B-A22B"  # fallback to smaller if needed
-FALLBACK_MODEL = "Qwen/Qwen2.5-72B-Instruct"
+DEFAULT_MODEL = "Qwen/Qwen3.5-27B"
+FALLBACK_MODEL = "Qwen/Qwen3.5-9B"
+
+# Path to api key file (relative to this file's directory)
+_KEY_FILE = Path(__file__).parent / "api_key.txt"
+
+
+def _load_api_key() -> str | None:
+    # 1. Environment variable takes priority
+    key = os.environ.get("SILICONFLOW_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    if key:
+        return key
+    # 2. Fall back to api_key.txt in project root
+    if _KEY_FILE.exists():
+        key = _KEY_FILE.read_text().strip()
+        if key:
+            return key
+    return None
 
 SYSTEM_PROMPT = """You are a GPU performance analysis expert specializing in NVIDIA Ada Lovelace architecture (RTX 4090).
 
@@ -28,13 +45,14 @@ Respond ONLY with valid JSON."""
 
 class LLMClient:
     def __init__(self):
-        api_key = os.environ.get("SILICONFLOW_API_KEY") or os.environ.get("OPENAI_API_KEY")
+        api_key = _load_api_key()
         if not api_key:
-            log.warning("No SILICONFLOW_API_KEY found; LLM interpretation disabled")
+            log.warning("No API key found (set SILICONFLOW_API_KEY or create api_key.txt); LLM interpretation disabled")
             self.client = None
             return
         self.client = OpenAI(api_key=api_key, base_url=SILICONFLOW_BASE_URL)
         self.model = DEFAULT_MODEL
+        log.info(f"LLM client initialized: {self.model}")
 
     def interpret(self, result: AnalyzedResult) -> str:
         """
